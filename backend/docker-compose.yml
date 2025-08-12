@@ -1,35 +1,6 @@
 version: '3.8'
 
 services:
-  # API Gateway
-  api-gateway:
-    build: ./api-gateway
-    ports:
-      - "8000:8000"
-    environment:
-      - URL_SERVICE_URL=http://url-service:8001
-      - REDIS_URL=redis://redis:6379/0
-    depends_on:
-      - redis
-      - url-service
-    networks:
-      - microservices
-
-  # URL Shortener Service
-  url-service:
-    build: ./url-service
-    ports:
-      - "8001:8001"
-    environment:
-      - DATABASE_URL=postgresql://username:password@postgres:5432/url_shortener_db
-      - REDIS_URL=redis://redis:6379/0
-      - SERVICE_PORT=8001
-    depends_on:
-      - postgres
-      - redis
-    networks:
-      - microservices
-
   # PostgreSQL Database
   postgres:
     image: postgres:15
@@ -41,8 +12,11 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    networks:
-      - microservices
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U username -d url_shortener_db"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # Redis Cache
   redis:
@@ -51,25 +25,65 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    networks:
-      - microservices
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-  # Nginx Load Balancer (Optional)
-  nginx:
-    image: nginx:alpine
+  # URL Shortener Service
+  url-service:
+    build: ./url-service
     ports:
-      - "80:80"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf
+      - "8001:8001"
+    environment:
+      - DATABASE_URL=postgresql://username:password@postgres:5432/url_shortener_db
+      - REDIS_URL=redis://redis:6379/0
+      - SERVICE_PORT=8001
+      - ANALYTICS_SERVICE_URL=http://analytics-service:8002
     depends_on:
-      - api-gateway
-    networks:
-      - microservices
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./url-service:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+
+  # Analytics Service (NEW)
+  analytics-service:
+    build: ./analytics-service
+    ports:
+      - "8002:8002"
+    environment:
+      - DATABASE_URL=postgresql://username:password@postgres:5432/url_shortener_db
+      - REDIS_URL=redis://redis:6379/1
+      - SERVICE_PORT=8002
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./analytics-service:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8002 --reload
+
+  # API Gateway (Updated)
+  api-gateway:
+    build: ./api-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      - URL_SERVICE_URL=http://url-service:8001
+      - ANALYTICS_SERVICE_URL=http://analytics-service:8002
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - url-service
+      - analytics-service
+    volumes:
+      - ./api-gateway:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 volumes:
   postgres_data:
   redis_data:
-
-networks:
-  microservices:
-    driver: bridge

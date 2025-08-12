@@ -8,7 +8,8 @@ logger = logging.getLogger(__name__)
 class ServiceDiscovery:
     def __init__(self):
         self.services = {
-            "url-service": settings.url_service_url
+            "url-service": settings.url_service_url,
+            "analytics-service": settings.analytics_service_url
         }
         self.client = httpx.AsyncClient(timeout=30.0)
     

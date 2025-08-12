@@ -1,3 +1,5 @@
+import json
+from datetime import datetime
 from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import JSONResponse, RedirectResponse
 import httpx
@@ -25,7 +27,7 @@ async def all_services_health():
     """Check health of all services"""
     services_health = {}
     
-    for service_name in ["url-service"]:
+    for service_name in ["url-service", "analytics-service"]:
         services_health[service_name] = await service_discovery.health_check(service_name)
     
     all_healthy = all(services_health.values())
@@ -119,10 +121,11 @@ async def deactivate_url(
 
 @router.get("/{short_code}")
 async def redirect_to_original(short_code: str, request: Request):
-    """Redirect to original URL"""
+    """Redirect to original URL with analytics tracking"""
     await rate_limiter.check_rate_limit(request)
     
     try:
+        # Get original URL
         response = await service_discovery.forward_request(
             "url-service",
             f"/redirect/{short_code}",
@@ -130,6 +133,26 @@ async def redirect_to_original(short_code: str, request: Request):
         )
         
         if response.status_code == 307:
+            # Record analytics event
+            try:
+                analytics_data = {
+                    "short_code": short_code,
+                    "ip_address": request.client.host if request.client else "unknown",
+                    "user_agent": request.headers.get("user-agent"),
+                    "referer": request.headers.get("referer")
+                }
+                
+                # Send to analytics service (fire and forget)
+                await service_discovery.forward_request(
+                    "analytics-service",
+                    "/analytics/events/",
+                    method="POST",
+                    json=analytics_data
+                )
+            except Exception as e:
+                # Don't fail redirect if analytics fails
+                logger.warning(f"Analytics tracking failed: {e}")
+            
             # Extract redirect URL from response
             redirect_url = response.headers.get("location")
             if redirect_url:
@@ -142,6 +165,3 @@ async def redirect_to_original(short_code: str, request: Request):
     except httpx.RequestError as e:
         logger.error(f"Failed to forward request: {e}")
         raise HTTPException(status_code=503, detail="URL service unavailable")
-    except Exception as e:
-        logger.error(f"Error redirecting: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
