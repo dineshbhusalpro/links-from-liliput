@@ -1,0 +1,254 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: liliput_postgres
+    environment:
+      POSTGRES_DB: url_shortener_db
+      POSTGRES_USER: username
+      POSTGRES_PASSWORD: password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U username -d url_shortener_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - liliput
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: liliput_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - liliput
+
+  # URL Service
+  url-service:
+    build: 
+      context: ./backend/url-service
+      dockerfile: Dockerfile
+    container_name: liliput_url_service
+    ports:
+      - "8001:8001"
+    environment:
+      - DATABASE_URL=postgresql://username:password@postgres:5432/url_shortener_db
+      - REDIS_URL=redis://redis:6379/0
+      - SERVICE_PORT=8001
+      - ANALYTICS_SERVICE_URL=http://analytics-service:8002
+      - ENVIRONMENT=development
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/url-service:/app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - liliput
+
+  # Analytics Service
+  analytics-service:
+    build: 
+      context: ./backend/analytics-service
+      dockerfile: Dockerfile
+    container_name: liliput_analytics_service
+    ports:
+      - "8002:8002"
+    environment:
+      - DATABASE_URL=postgresql://username:password@postgres:5432/url_shortener_db
+      - REDIS_URL=redis://redis:6379/1
+      - SERVICE_PORT=8002
+      - ENVIRONMENT=development
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/analytics-service:/app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - liliput
+
+  # API Gateway
+  api-gateway:
+    build: 
+      context: ./backend/api-gateway
+      dockerfile: Dockerfile
+    container_name: liliput_api_gateway
+    ports:
+      - "8000:8000"
+    environment:
+      - URL_SERVICE_URL=http://url-service:8001
+      - ANALYTICS_SERVICE_URL=http://analytics-service:8002
+      - REDIS_URL=redis://redis:6379/0
+      - API_KEY=secure-api-key-change-in-production
+      - RATE_LIMIT_PER_MINUTE=100
+      - ENVIRONMENT=development
+    depends_on:
+      url-service:
+        condition: service_healthy
+      analytics-service:
+        condition: service_healthy
+    volumes:
+      - ./backend/api-gateway:/app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - liliput
+
+  # Frontend (Streamlit)
+  frontend:
+    build: 
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: liliput_frontend
+    ports:
+      - "8501:8501"
+    environment:
+      - API_BASE_URL=http://api-gateway:8000
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+      - STREAMLIT_SERVER_HEADLESS=true
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    volumes:
+      - ./frontend:/app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - liliput
+
+  # Nginx Load Balancer (NOW FROM ROOT)
+  nginx:
+    image: nginx:alpine
+    container_name: liliput_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./nginx/logs:/var/log/nginx
+    depends_on:
+      - api-gateway
+      - frontend
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - liliput
+
+  # Development Tools (Optional)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: liliput_redis_commander
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+      - HTTP_USER=admin
+      - HTTP_PASSWORD=admin123
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    profiles:
+      - debug
+    networks:
+      - liliput
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: liliput_pgadmin
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@liliput.com
+      - PGADMIN_DEFAULT_PASSWORD=admin123
+      - PGADMIN_CONFIG_SERVER_MODE=False
+    ports:
+      - "8080:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - postgres
+    profiles:
+      - debug
+    networks:
+      - liliput
+
+  # Portainer for Docker Management (Optional)
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: liliput_portainer
+    ports:
+      - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    profiles:
+      - debug
+    networks:
+      - liliput
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+  portainer_data:
+    driver: local
+
+networks:
+  liliput:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16

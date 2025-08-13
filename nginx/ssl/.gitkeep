@@ -1,0 +1,4 @@
+# This directory will contain SSL certificates for production
+# Add your SSL certificates here:
+# - cert.pem
+# - key.pem

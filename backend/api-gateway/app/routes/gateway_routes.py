@@ -165,3 +165,58 @@ async def redirect_to_original(short_code: str, request: Request):
     except httpx.RequestError as e:
         logger.error(f"Failed to forward request: {e}")
         raise HTTPException(status_code=503, detail="URL service unavailable")
+    
+
+@router.get("/api/v1/analytics/global")
+async def get_global_analytics(request: Request):
+    """Get global analytics"""
+    await rate_limiter.check_rate_limit(request)
+    
+    try:
+        response = await service_discovery.forward_request(
+            "analytics-service",
+            "/analytics/global",
+            method="GET"
+        )
+        
+        return JSONResponse(
+            status_code=response.status_code,
+            content=response.json()
+        )
+    except httpx.RequestError as e:
+        logger.error(f"Failed to forward analytics request: {e}")
+        raise HTTPException(status_code=503, detail="Analytics service unavailable")
+    except Exception as e:
+        logger.error(f"Error getting global analytics: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/api/v1/analytics/{short_code}")
+async def get_url_analytics(short_code: str, request: Request):
+    """Get analytics for a specific URL"""
+    # Add validation to prevent conflicts
+    if short_code == "global":
+        raise HTTPException(
+            status_code=400, 
+            detail="Invalid short code: 'global' is reserved"
+        )
+    
+    await rate_limiter.check_rate_limit(request)
+    
+    try:
+        response = await service_discovery.forward_request(
+            "analytics-service",
+            f"/analytics/stats/{short_code}",
+            method="GET"
+        )
+        
+        return JSONResponse(
+            status_code=response.status_code,
+            content=response.json()
+        )
+    except httpx.RequestError as e:
+        logger.error(f"Failed to forward analytics request: {e}")
+        raise HTTPException(status_code=503, detail="Analytics service unavailable")
+    except Exception as e:
+        logger.error(f"Error getting URL analytics: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
